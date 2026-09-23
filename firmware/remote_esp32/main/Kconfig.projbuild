@@ -1,0 +1,14 @@
+menu "Kaniye remote"
+config REMOTE_ESPNOW_CHANNEL
+    int "ESP-NOW channel"
+    range 1 13
+    default 1
+config REMOTE_COMMAND_TIMEOUT_MS
+    int "Failsafe timeout (ms)"
+    range 100 10000
+    default 500
+config REMOTE_PTT_ADC_CHANNEL
+    int "PTT ADC channel"
+    range 0 9
+    default 6
+endmenu

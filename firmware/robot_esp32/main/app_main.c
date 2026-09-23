@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 
 #include "control/motor_controller.h"
+#include "audio/audio_output.h"
 #include "network/robot_transport.h"
 #include "safety/safety_monitor.h"
 
@@ -14,6 +15,7 @@ void app_main(void)
 
     safety_monitor_init();
     motor_controller_init();
+    audio_output_init();
     robot_transport_init();
 
     xTaskCreatePinnedToCore(safety_monitor_task, "safety_monitor", 4096, NULL, 5, NULL, 1);

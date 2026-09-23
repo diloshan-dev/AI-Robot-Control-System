@@ -17,4 +17,13 @@ menu "Kaniye Robot Settings"
         range 1 65535
         default 8000
 
+    config ROBOT_AUDIO_DMA_BUF_LEN
+        int "Audio DMA buffer length (smaller is lower latency)"
+        range 64 1024
+        default 256
+
+    config ROBOT_AUDIO_SELF_MONITOR
+        bool "Include remote microphone in local monitor mix"
+        default n
+
 endmenu

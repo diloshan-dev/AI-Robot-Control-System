@@ -4,11 +4,13 @@ idf_component_register(
         "safety/safety_monitor.c"
         "control/motor_controller.c"
         "network/robot_transport.c"
+        "audio/audio_output.c"
     INCLUDE_DIRS
         "."
         "safety"
         "control"
         "network"
+        "audio"
     REQUIRES
         esp_wifi
         esp_event
@@ -16,4 +18,5 @@ idf_component_register(
         nvs_flash
         esp_websocket_client
         json
+        mbedtls
 )

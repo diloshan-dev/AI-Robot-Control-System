@@ -6,7 +6,10 @@ from typing import Any
 
 import requests
 
-from key_pool import ApiKeyPool
+try:
+    from .key_pool import ApiKeyPool
+except ImportError:  # pragma: no cover
+    from key_pool import ApiKeyPool
 
 
 class ElevenLabsTTS:
@@ -41,7 +44,13 @@ class ElevenLabsTTS:
                     "Content-Type": "application/json",
                     "xi-api-key": api_key,
                 }
-                response = requests.post(url, json=payload, headers=headers, timeout=60)
+                response = requests.post(
+                    url,
+                    params={"output_format": "pcm_16000"},
+                    json=payload,
+                    headers=headers,
+                    timeout=60,
+                )
                 if response.status_code >= 400:
                     self.key_pool.mark_failure(api_key, f"status={response.status_code}")
                     last_error = RuntimeError(f"ElevenLabs TTS error: {response.status_code} {response.text[:200]}")

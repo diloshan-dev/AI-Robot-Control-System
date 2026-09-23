@@ -1,0 +1,20 @@
+menu "Kaniye camera node"
+config CAM_WIFI_SSID
+    string "WiFi SSID"
+    default "your_wifi_ssid"
+config CAM_WIFI_PASSWORD
+    string "WiFi password"
+    default "your_wifi_password"
+config CAM_HTTP_PORT
+    int "HTTP port"
+    range 1 65535
+    default 80
+config CAM_SERVO_GPIO
+    int "Pan servo GPIO"
+    range 0 39
+    default 14
+config CAM_MJPEG_FPS
+    int "Streaming frame rate"
+    range 1 30
+    default 10
+endmenu

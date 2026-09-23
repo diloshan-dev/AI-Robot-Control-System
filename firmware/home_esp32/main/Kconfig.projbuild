@@ -1,0 +1,33 @@
+menu "Kaniye home controller"
+config HOME_WIFI_SSID
+    string "PC network WiFi SSID"
+    default "your_wifi_ssid"
+config HOME_WIFI_PASSWORD
+    string "PC network WiFi password"
+    default "your_wifi_password"
+config HOME_SERVER_URL
+    string "PC server command URL"
+    default "http://192.168.1.50:8000/api/room/device"
+config HOME_ROOM_ID
+    string "Room identifier"
+    default "living-room"
+config HOME_DEVICE_ID
+    string "Device identifier"
+    default "home-esp32"
+config HOME_COMMAND_TIMEOUT_MS
+    int "Command timeout (ms)"
+    range 100 10000
+    default 1000
+config HOME_PTT_ADC_CHANNEL
+    int "Push-to-talk ADC channel"
+    range 0 9
+    default 6
+config HOME_AUDIO_THRESHOLD
+    int "Audio gate threshold"
+    range 0 4095
+    default 120
+config HOME_RELAY_GPIO
+    int "Accessory relay GPIO"
+    range 0 39
+    default 2
+endmenu

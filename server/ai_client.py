@@ -41,7 +41,10 @@ except ImportError:  # pragma: no cover
         upsert_daily_log,
     )
 
-from key_pool import ApiKeyPool
+try:
+    from .key_pool import ApiKeyPool
+except ImportError:  # pragma: no cover
+    from key_pool import ApiKeyPool
 
 logger = logging.getLogger(__name__)
 
@@ -191,11 +194,17 @@ class GeminiClient:
             save_note(args.get("person", "default"), args.get("info", ""))
             return {"status": "ok", "action": "save_user_note"}
         if name == "add_routine":
-            from database import add_routine
+            try:
+                from .database import add_routine
+            except ImportError:  # pragma: no cover
+                from database import add_routine
             add_routine(args.get("time", "00:00"), args.get("task", ""))
             return {"status": "ok", "action": "add_routine"}
         if name == "remove_routine":
-            from database import remove_routine
+            try:
+                from .database import remove_routine
+            except ImportError:  # pragma: no cover
+                from database import remove_routine
             remove_routine(args.get("time", "00:00"))
             return {"status": "ok", "action": "remove_routine"}
         if name == "change_setting":

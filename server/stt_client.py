@@ -4,7 +4,10 @@ import os
 
 import requests
 
-from key_pool import ApiKeyPool
+try:
+    from .key_pool import ApiKeyPool
+except ImportError:  # pragma: no cover
+    from key_pool import ApiKeyPool
 
 
 class OpenAIWhisperSTT:
@@ -30,7 +33,7 @@ class OpenAIWhisperSTT:
                 if language:
                     data["language"] = language
                 # Intentionally omit language to allow Whisper auto-detect across Sinhala and English.
-                headers = {"Authorization": f"Bearer {api_key}"}
+                headers = {"Authorization": "Bearer " + api_key}
                 response = requests.post(self.endpoint, files=files, data=data, headers=headers, timeout=90)
                 if response.status_code >= 400:
                     self.key_pool.mark_failure(api_key, f"status={response.status_code}")

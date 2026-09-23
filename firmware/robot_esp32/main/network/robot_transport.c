@@ -5,8 +5,11 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "mbedtls/base64.h"
 #include "driver/gpio.h"
 #include "esp_event.h"
+#include "esp_idf_version.h"
+#include "esp_now.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_websocket_client.h"
@@ -15,11 +18,114 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "audio/audio_output.h"
+#include "control/motor_controller.h"
+
+#define REMOTE_PACKET_MAGIC 0x4B4E
+#define REMOTE_DATA_CONTROL 1
+#define REMOTE_DATA_AUDIO 2
+#define REMOTE_DATA_MODE 3
+#define REMOTE_MODE_KARAOKE 1
+
+typedef struct __attribute__((packed)) {
+    uint16_t magic;
+    uint8_t type;
+    uint8_t seq;
+    int8_t joystick_x;
+    int8_t joystick_y;
+    uint8_t buttons;
+    uint8_t mode;
+    uint16_t samples;
+    int16_t audio[96];
+} remote_packet_t;
+
+static volatile uint8_t remote_mode = 0;
+
+static void handle_espnow_packet(const uint8_t *data, int len)
+{
+    if (data == NULL || len != sizeof(remote_packet_t)) {
+        return;
+    }
+    const remote_packet_t *packet = (const remote_packet_t *)data;
+    if (packet->magic != REMOTE_PACKET_MAGIC ||
+        (packet->type != REMOTE_DATA_CONTROL &&
+         packet->type != REMOTE_DATA_AUDIO &&
+         packet->type != REMOTE_DATA_MODE)) {
+        return;
+    }
+    remote_mode = packet->mode;
+    if (packet->type == REMOTE_DATA_AUDIO) {
+        uint16_t samples = packet->samples > 96 ? 96 : packet->samples;
+        audio_output_play_pcm16((const uint8_t *)packet->audio,
+                                samples * sizeof(int16_t), 100);
+        return;
+    }
+    if (packet->type == REMOTE_DATA_CONTROL && packet->mode != REMOTE_MODE_KARAOKE) {
+        int left = packet->joystick_y + packet->joystick_x;
+        int right = packet->joystick_y - packet->joystick_x;
+        if (left > 127) left = 127;
+        if (left < -127) left = -127;
+        if (right > 127) right = 127;
+        if (right < -127) right = -127;
+        motor_controller_set_motion((left * 100) / 127, (right * 100) / 127);
+    } else if (packet->type == REMOTE_DATA_MODE && packet->mode == REMOTE_MODE_KARAOKE) {
+        motor_controller_stop();
+    }
+}
+
+#if ESP_IDF_VERSION_MAJOR >= 5
+static void espnow_receive_callback(const esp_now_recv_info_t *recv_info,
+                                    const uint8_t *data, int len)
+{
+    (void)recv_info;
+    handle_espnow_packet(data, len);
+}
+#else
+static void espnow_receive_callback(const uint8_t *mac_addr, const uint8_t *data, int len)
+{
+    (void)mac_addr;
+    handle_espnow_packet(data, len);
+}
+#endif
 static const char *TAG = "transport";
 static QueueHandle_t command_queue;
 static esp_websocket_client_handle_t websocket_client = NULL;
 static bool wifi_connected = false;
 static int reconnect_attempt = 0;
+static char *websocket_rx_buffer = NULL;
+
+static void handle_server_payload(const char *payload, size_t length)
+{
+    cJSON *root = cJSON_ParseWithLength(payload, length);
+    if (root == NULL) {
+        ESP_LOGW(TAG, "Ignoring invalid WebSocket JSON payload");
+        return;
+    }
+    cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    if (cJSON_IsString(type) && strcmp(type->valuestring, "audio_response") == 0) {
+        cJSON *encoded = cJSON_GetObjectItemCaseSensitive(root, "data");
+        cJSON *volume = cJSON_GetObjectItemCaseSensitive(root, "volume_hint");
+        if (cJSON_IsString(encoded)) {
+            size_t decoded_len = 0;
+            size_t encoded_len = strlen(encoded->valuestring);
+            int decode_status = mbedtls_base64_decode(NULL, 0, &decoded_len,
+                                                       (const unsigned char *)encoded->valuestring,
+                                                       encoded_len);
+            if (decode_status == MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL) {
+                uint8_t *pcm = malloc(decoded_len);
+                if (pcm != NULL &&
+                    mbedtls_base64_decode(pcm, decoded_len, &decoded_len,
+                                          (const unsigned char *)encoded->valuestring,
+                                          encoded_len) == 0) {
+                    uint8_t gain = cJSON_IsNumber(volume) ? (uint8_t)volume->valueint : 50;
+                    audio_output_play_pcm16(pcm, decoded_len, gain);
+                }
+                free(pcm);
+            }
+        }
+    }
+    cJSON_Delete(root);
+}
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -37,7 +143,20 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
             break;
         case WEBSOCKET_EVENT_DATA:
             if (data && data->data_len > 0) {
-                ESP_LOGI(TAG, "Received server message: %.*s", data->data_len, (char *)data->data_ptr);
+                if (data->payload_offset == 0) {
+                    free(websocket_rx_buffer);
+                    websocket_rx_buffer = calloc(data->payload_len + 1, sizeof(char));
+                }
+                if (websocket_rx_buffer != NULL &&
+                    data->payload_offset + data->data_len <= data->payload_len) {
+                    memcpy(websocket_rx_buffer + data->payload_offset,
+                           data->data_ptr, data->data_len);
+                    if (data->payload_offset + data->data_len == data->payload_len) {
+                        handle_server_payload(websocket_rx_buffer, data->payload_len);
+                        free(websocket_rx_buffer);
+                        websocket_rx_buffer = NULL;
+                    }
+                }
             }
             break;
         default:
@@ -123,6 +242,8 @@ void robot_transport_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_now_init());
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_receive_callback));
 
     command_queue = xQueueCreate(8, sizeof(robot_command_message_t));
     if (command_queue == NULL) {

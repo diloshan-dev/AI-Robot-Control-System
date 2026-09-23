@@ -82,6 +82,15 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.get("/keys/status")
+async def keys_status() -> dict[str, Any]:
+    return {
+        "gemini": ai_client.key_pool.status(),
+        "elevenlabs": tts_client.key_pool.status(),
+        "stt": stt_client.key_pool.status(),
+    }
+
+
 @app.post("/command")
 async def command(payload: RobotCommand) -> dict[str, Any]:
     if payload.action == "stop":

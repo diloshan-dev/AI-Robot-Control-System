@@ -8,7 +8,11 @@ Kaniye is a Sinhala/English AI companion robot system built as a split architect
 ## Project structure
 
 - `firmware/robot_esp32` — ESP-IDF firmware with local safety/motor logic and WiFi + WebSocket communication.
+- `firmware/esp32_cam` — camera/JPEG and pan-tilt node.
+- `firmware/home_esp32` — WiFi-connected room relay/light node.
+- `firmware/remote_esp32` — ESP-NOW joystick, push-to-talk, and karaoke controller.
 - `server` — FastAPI App for AI orchestration, audio processing, and dashboard endpoints.
+- `docs/HARDWARE.md` — four-node BOM, pinout, wiring, and system diagrams.
 - `.env.example` — required environment keys and runtime config template.
 
 ## Quick setup
@@ -48,10 +52,16 @@ idf.py build
 idf.py flash monitor
 ```
 
+The camera, home, and remote nodes are separate ESP-IDF projects under
+`firmware/`. Each has its own `idf.py menuconfig` settings and must be flashed
+independently. The remote uses the ESP-NOW packet protocol documented in
+`firmware/remote_esp32/PROTOCOL.md`; its push-to-talk PCM packets are consumed
+locally by `robot_esp32`, so walkie-talkie audio does not require the PC server.
+
 ## AI / API choices
 
-- Gemini: `google-generativeai` with multi-key rotation, automatic fallback, and structured function calling.
-- ElevenLabs: REST API synthesize final response audio and send it back over the WebSocket with a `volume_hint`.
+- Gemini: `google-genai` with multi-key rotation, automatic fallback, and structured function calling.
+- ElevenLabs: REST API synthesis requested as PCM16 at 16 kHz and sent over the WebSocket with a `volume_hint`; the ESP32 scales samples before I2S playback.
 - STT: OpenAI Whisper API (`OPENAI_API_KEY`). Whisper supports many languages, including Sinhala in practice, but recognition quality depends on the audio quality and accent.
 
 ## ESP32 ↔ Server message schema
@@ -71,6 +81,15 @@ Server -> ESP32:
 {"type":"command","action":"stop","params":{}}
 {"type":"audio_response","data":"base64_audio","volume_hint":80}
 ```
+
+The robot audio output uses I2S pins `BCLK=GPIO23`, `LRCK=GPIO22`, and
+`DOUT=GPIO21`. The emergency-stop input is `GPIO13` (GPIO0 is intentionally
+avoided because it is a boot-strapping pin). ElevenLabs PCM output is mono
+PCM16 at 16 kHz; the `volume_hint` is applied as playback gain on the robot.
+
+For latency tuning, adjust `ROBOT_AUDIO_DMA_BUF_LEN` in
+`firmware/robot_esp32/main/robot_config.h`. Smaller buffers reduce latency but
+leave less margin for WiFi scheduling.
 
 ## Database-backed features
 
