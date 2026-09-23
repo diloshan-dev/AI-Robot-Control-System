@@ -1,0 +1,12 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "safety/safety_monitor.c"
+        "control/motor_controller.c"
+        "network/robot_transport.c"
+    INCLUDE_DIRS
+        "."
+        "safety"
+        "control"
+        "network"
+)

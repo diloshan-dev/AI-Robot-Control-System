@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ESP-IDF / C build outputs
+build/
+*.bin
+*.elf
+*.map
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
