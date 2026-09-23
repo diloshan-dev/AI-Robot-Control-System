@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -19,4 +21,5 @@ typedef struct {
 QueueHandle_t robot_command_queue(void);
 void robot_transport_init(void);
 void robot_transport_publish_command(robot_command_t type, int speed);
+void robot_transport_publish_telemetry(float battery_pct, const char *event_name, const char *json_extra);
 void robot_transport_task(void *arg);

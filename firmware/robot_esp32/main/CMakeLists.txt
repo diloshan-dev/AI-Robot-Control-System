@@ -9,4 +9,11 @@ idf_component_register(
         "safety"
         "control"
         "network"
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        esp_websocket_client
+        json
 )

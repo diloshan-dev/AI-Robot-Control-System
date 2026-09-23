@@ -1,0 +1,20 @@
+menu "Kaniye Robot Settings"
+
+    config ROBOT_WIFI_SSID
+        string "WiFi SSID"
+        default "your_wifi_ssid"
+
+    config ROBOT_WIFI_PASSWORD
+        string "WiFi Password"
+        default "your_wifi_password"
+
+    config ROBOT_SERVER_HOST
+        string "Robot server host"
+        default "192.168.1.50"
+
+    config ROBOT_SERVER_PORT
+        int "Robot server port"
+        range 1 65535
+        default 8000
+
+endmenu

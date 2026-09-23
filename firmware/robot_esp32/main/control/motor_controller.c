@@ -1,5 +1,7 @@
 #include "motor_controller.h"
 
+#include <stdlib.h>
+
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_log.h"
