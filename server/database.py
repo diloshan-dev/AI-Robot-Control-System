@@ -55,6 +55,14 @@ def init_db() -> None:
                 summary TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS daily_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                log_date TEXT NOT NULL,
+                event_name TEXT NOT NULL,
+                details TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         conn.commit()
@@ -151,6 +159,24 @@ def save_daily_log(date: str, summary: str) -> None:
             (date, summary),
         )
         conn.commit()
+
+
+def append_daily_event(date: str, event_name: str, details: str | None = None) -> None:
+    with closing(_connect()) as conn:
+        conn.execute(
+            "INSERT INTO daily_events(log_date, event_name, details) VALUES (?, ?, ?)",
+            (date, event_name, details),
+        )
+        conn.commit()
+
+
+def get_daily_events(date: str) -> list[dict[str, Any]]:
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT log_date, event_name, details, created_at FROM daily_events WHERE log_date = ? ORDER BY id ASC",
+            (date,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def default_settings() -> None:

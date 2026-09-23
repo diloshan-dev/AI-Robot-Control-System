@@ -1,42 +1,47 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime
 from typing import Any
 
 try:
-    import google.generativeai as genai
-except ImportError:  # pragma: no cover - installed in the runtime environment
+    from google import genai
+    from google.genai import types
+except ImportError:  # pragma: no cover
     genai = None
+    types = None
 
 try:
     from .database import (
         append_conversation,
         build_system_context,
         fetch_recent_conversations,
+        get_daily_events,
         get_daily_log,
         get_setting,
         list_routines,
         save_note,
-        serialize_json,
         set_setting,
         upsert_daily_log,
     )
-except ImportError:  # pragma: no cover - direct script execution
+except ImportError:  # pragma: no cover
     from database import (
         append_conversation,
         build_system_context,
         fetch_recent_conversations,
+        get_daily_events,
         get_daily_log,
         get_setting,
         list_routines,
         save_note,
-        serialize_json,
         set_setting,
         upsert_daily_log,
     )
+
+from key_pool import ApiKeyPool
 
 logger = logging.getLogger(__name__)
 
@@ -47,355 +52,174 @@ class GeminiKeyRotationError(RuntimeError):
         self.failures = failures
 
 
-class GeminiKeyManager:
-    def __init__(self) -> None:
-        configured = os.getenv("GEMINI_API_KEYS", "")
-        self.keys: list[str] = [key.strip() for key in configured.split(",") if key.strip()]
-        if not self.keys:
-            logger.warning("No Gemini API keys configured. Gemini calls will fail until keys are added.")
-
-    def rotate_key(self) -> str | None:
-        if not self.keys:
-            return None
-        key = self.keys.pop(0)
-        self.keys.append(key)
-        return key
-
-    def current_key(self) -> str | None:
-        return self.keys[0] if self.keys else None
-
-
 class GeminiClient:
-    """Real Gemini-backed AI client with multi-key fallback and tool-calling support."""
-
-    TOOL_SCHEMAS = [
-        {
-            "type": "function",
-            "function": {
-                "name": "move_robot",
-                "description": "Move the robot in a direction at a given speed for a fixed duration.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "direction": {"type": "string", "enum": ["forward", "backward", "left", "right"]},
-                        "speed": {"type": "integer", "minimum": 0, "maximum": 100},
-                        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 20000},
-                    },
-                    "required": ["direction", "speed", "duration_ms"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "stop_robot",
-                "description": "Stop the robot immediately.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "set_led",
-                "description": "Set a LED mode, color and duration.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "mode": {"type": "string", "enum": ["on", "off", "blink", "pulse"]},
-                        "color": {"type": "string"},
-                        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 30000},
-                    },
-                    "required": ["mode", "color"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "set_alarm",
-                "description": "Set an alarm time in HH:MM format.",
-                "parameters": {"type": "object", "properties": {"time": {"type": "string"}}, "required": ["time"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "add_routine",
-                "description": "Add a scheduled routine task.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "time": {"type": "string"},
-                        "task": {"type": "string"},
-                    },
-                    "required": ["time", "task"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "remove_routine",
-                "description": "Remove a routine by the scheduled time.",
-                "parameters": {"type": "object", "properties": {"time": {"type": "string"}}, "required": ["time"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "save_user_note",
-                "description": "Store user personal information for future context.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "person": {"type": "string"},
-                        "info": {"type": "string"},
-                    },
-                    "required": ["person", "info"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "change_setting",
-                "description": "Update a robot setting.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "key": {"type": "string"},
-                        "value": {"type": "string"},
-                    },
-                    "required": ["key", "value"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Check weather for a city.",
-                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "start_web_manager",
-                "description": "Start the web manager dashboard from the server.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "stop_web_manager",
-                "description": "Stop the web manager dashboard.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "play_radio",
-                "description": "Play a radio station via the robot media subsystem.",
-                "parameters": {"type": "object", "properties": {"station_name": {"type": "string"}}, "required": ["station_name"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "set_volume",
-                "description": "Set the spoken audio volume level.",
-                "parameters": {"type": "object", "properties": {"level": {"type": "integer", "minimum": 0, "maximum": 100}}, "required": ["level"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "turn_on_light",
-                "description": "Turn on a light in a room.",
-                "parameters": {"type": "object", "properties": {"room": {"type": "string"}}, "required": ["room"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "turn_off_light",
-                "description": "Turn off a light in a room.",
-                "parameters": {"type": "object", "properties": {"room": {"type": "string"}}, "required": ["room"]},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "set_reminder",
-                "description": "Set a timed reminder for a person.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "person": {"type": "string"},
-                        "time": {"type": "string"},
-                        "message": {"type": "string"},
-                    },
-                    "required": ["person", "time", "message"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "forget_person",
-                "description": "Remove a person from known memory.",
-                "parameters": {"type": "object", "properties": {"person": {"type": "string"}}, "required": ["person"]},
-            },
-        },
-    ]
-
     def __init__(self, model: str = "gemini-2.0-flash") -> None:
         self.model_name = model
-        self.key_manager = GeminiKeyManager()
-        self._model = None
-        self._last_failure: str | None = None
-        if genai is not None and self.key_manager.current_key():
-            genai.configure(api_key=self.key_manager.current_key())
-            self._model = genai.GenerativeModel(self.model_name)
+        self.key_pool = ApiKeyPool(
+            [item.strip() for item in os.getenv("GEMINI_API_KEYS", "").split(",") if item.strip()],
+            service="gemini",
+        )
 
-    def _ensure_model(self) -> Any:
-        if genai is None:
-            raise RuntimeError("google-generativeai package is not installed")
-        key = self.key_manager.current_key()
-        if not key:
-            raise RuntimeError("No Gemini API key configured")
-        genai.configure(api_key=key)
-        self._model = genai.GenerativeModel(self.model_name)
-        return self._model
+    def _schema(self, name: str, description: str, properties: dict[str, Any], required: list[str] | None = None) -> Any:
+        if types is None:
+            return {}
+        return types.FunctionDeclaration(
+            name=name,
+            description=description,
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={k: types.Schema(type=v.get("type", "STRING"), description=v.get("description"), enum=v.get("enum"), minimum=v.get("minimum"), maximum=v.get("maximum")) for k, v in properties.items()},
+                required=required or [],
+            ),
+        )
 
-    async def _call_with_rotation(self, prompt: str, *, system_prompt: str | None = None, function_calls: bool = True) -> Any:
+    def _tool_declarations(self) -> list[Any]:
+        if types is None:
+            return []
+        return [
+            self._schema("move_robot", "Move the robot in a direction", {"direction":{"type":"STRING","enum":["forward","backward","left","right"]},"speed":{"type":"INTEGER","minimum":0,"maximum":100},"duration_ms":{"type":"INTEGER","minimum":0,"maximum":20000}}, ["direction","speed","duration_ms"]),
+            self._schema("stop_robot", "Stop the robot immediately", {}, []),
+            self._schema("set_led", "Set the LED mode and color", {"mode":{"type":"STRING","enum":["on","off","blink","pulse"]},"color":{"type":"STRING"},"duration_ms":{"type":"INTEGER","minimum":0,"maximum":30000}}, ["mode","color"]),
+            self._schema("set_alarm", "Set the alarm time", {"time":{"type":"STRING"}}, ["time"]),
+            self._schema("add_routine", "Schedule a routine", {"time":{"type":"STRING"},"task":{"type":"STRING"}}, ["time","task"]),
+            self._schema("remove_routine", "Remove a routine by time", {"time":{"type":"STRING"}}, ["time"]),
+            self._schema("save_user_note", "Save personal information about someone", {"person":{"type":"STRING"},"info":{"type":"STRING"}}, ["person","info"]),
+            self._schema("change_setting", "Update a robot setting", {"key":{"type":"STRING"},"value":{"type":"STRING"}}, ["key","value"]),
+            self._schema("get_weather", "Get weather for a city", {"city":{"type":"STRING"}}, ["city"]),
+            self._schema("start_web_manager", "Start the dashboard manager", {}, []),
+            self._schema("stop_web_manager", "Stop the dashboard manager", {}, []),
+            self._schema("play_radio", "Play a radio station", {"station_name":{"type":"STRING"}}, ["station_name"]),
+            self._schema("set_volume", "Set speaker volume", {"level":{"type":"INTEGER","minimum":0,"maximum":100}}, ["level"]),
+            self._schema("turn_on_light", "Turn on a room light", {"room":{"type":"STRING"}}, ["room"]),
+            self._schema("turn_off_light", "Turn off a room light", {"room":{"type":"STRING"}}, ["room"]),
+            self._schema("set_reminder", "Set a reminder for a person", {"person":{"type":"STRING"},"time":{"type":"STRING"},"message":{"type":"STRING"}}, ["person","time","message"]),
+            self._schema("forget_person", "Forget a person", {"person":{"type":"STRING"}}, ["person"]),
+        ]
+
+    def _config(self, *, use_tools: bool = False) -> Any | None:
+        if types is None:
+            return None
+        cfg = {"temperature": 0.3, "system_instruction": build_system_context()}
+        if use_tools:
+            cfg["tools"] = [types.Tool(function_declarations=self._tool_declarations())]
+        return types.GenerateContentConfig(**cfg)
+
+    async def _call_with_rotation(self, prompt: str, *, use_tools: bool = False) -> Any:
         failures: list[str] = []
-        for _ in range(max(1, len(self.key_manager.keys) or 1)):
-            key = self.key_manager.rotate_key()
+        for _ in range(max(1, len(self.key_pool.keys) if self.key_pool.keys else 1)):
+            key = self.key_pool.next_key()
             if not key:
                 break
             try:
-                model = self._ensure_model()
-                if function_calls:
-                    return model.generate_content(
-                        [system_prompt or build_system_context(), prompt],
-                        tools=self.TOOL_SCHEMAS,
-                        generation_config={"temperature": 0.4},
-                    )
-                return model.generate_content([system_prompt or build_system_context(), prompt])
-            except Exception as exc:  # pragma: no cover - depends on network/api availability
-                failure = f"key={key[:4]}... ({exc})"
-                failures.append(failure)
-                logger.warning("Gemini key failed: %s", failure)
-                self._last_failure = str(exc)
-        if failures:
-            raise GeminiKeyRotationError("All Gemini API keys failed or no keys were configured.", failures)
-        raise RuntimeError("No Gemini API keys available")
+                if genai is None:
+                    raise RuntimeError("google-genai package is not installed")
+                client = genai.Client(api_key=key)
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=self._config(use_tools=use_tools),
+                )
+                self.key_pool.mark_success(key)
+                return response
+            except Exception as exc:  # pragma: no cover
+                failures.append(f"{key[:4]}...: {exc}")
+                self.key_pool.mark_failure(key, str(exc))
+                logger.warning("Gemini key failed: %s", exc)
+        raise GeminiKeyRotationError("All configured Gemini keys failed; service unavailable.", failures)
 
-    async def generate_reply(self, text: str, *, vision_context: str | None = None) -> str:
-        system_prompt = build_system_context()
-        prompt = text if not vision_context else f"Vision context: {vision_context}\nUser prompt: {text}"
-        response = await asyncio.to_thread(self._generate_reply_sync, prompt, system_prompt)
-        return response
-
-    def _generate_reply_sync(self, prompt: str, system_prompt: str) -> str:
-        if genai is None:
-            return f"Gemini SDK unavailable. User message: {prompt}"
+    async def generate_reply(self, prompt: str) -> str:
         try:
-            response = asyncio.run(self._call_with_rotation(prompt, system_prompt=system_prompt, function_calls=False))
-            result = getattr(response, "text", None)
-            if result is None:
-                result = response.candidates[0].content.parts[0].text
-            return result.strip() or "I am here and ready to help."
-        except Exception:
-            return "I could not reach the Gemini service right now. Please try again in a moment."
+            response = await asyncio.to_thread(self._generate_reply_sync, prompt)
+            return response
+        except GeminiKeyRotationError:
+            return "I could not reach the Gemini service right now. Please try again." 
 
-    async def classify_intent(self, text: str) -> dict[str, Any]:
-        lowered = text.lower()
-        if "stop" in lowered or "නවත්තන්න" in lowered:
-            return {"intent": "emergency_stop", "confidence": 0.98}
-        if "come" in lowered or "ළඟ" in lowered:
-            return {"intent": "approach_user", "confidence": 0.94}
-        return {"intent": "chat", "confidence": 0.80}
+    def _generate_reply_sync(self, prompt: str) -> str:
+        try:
+            response = asyncio.run(self._call_with_rotation(prompt, use_tools=False))
+            text = getattr(response, "text", None)
+            if text:
+                return str(text).strip() or "I am ready to help."
+            for candidate in getattr(response, "candidates", []) or []:
+                content = getattr(candidate, "content", None)
+                if content is None:
+                    continue
+                parts = getattr(content, "parts", []) or []
+                for part in parts:
+                    value = getattr(part, "text", None)
+                    if value:
+                        return str(value).strip()
+            return "I am ready to help."
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Gemini reply generation failed: %s", exc)
+            return "I could not reach the Gemini service right now. Please try again."
 
     async def handle_user_message(self, person: str, speaker: str, text: str) -> dict[str, Any]:
         append_conversation(person, speaker, text)
-        response_text = await self.generate_reply(text)
-        append_conversation(person, "assistant", response_text)
-        return {"reply": response_text, "intent": await self.classify_intent(text)}
+        reply = await self.generate_reply(text)
+        append_conversation(person, "assistant", reply)
+        return {"reply": reply, "intent": await self.classify_intent(text)}
 
-    async def summarize_history(self, person: str) -> str:
-        history = fetch_recent_conversations(person, 80)
-        transcript = "\n".join(f"{row['speaker']}: {row['message']}" for row in history)
-        if not transcript:
-            return ""
-        try:
-            response = await self._call_with_rotation(
-                "Summarize the conversation into a short memory snapshot for a robot companion.\n" + transcript,
-                system_prompt=build_system_context(),
-                function_calls=False,
-            )
-            return getattr(response, "text", "").strip() or transcript[:1000]
-        except Exception as exc:  # pragma: no cover - network dependent
-            logger.warning("Conversation summarization failed: %s", exc)
-            return transcript[:1000]
+    async def classify_intent(self, text: str) -> dict[str, Any]:
+        lower = text.lower()
+        if "stop" in lower or "නවත්තන්න" in lower:
+            return {"intent": "emergency_stop", "confidence": 0.98}
+        if "come" in lower or "ළඟ" in lower:
+            return {"intent": "approach_user", "confidence": 0.94}
+        return {"intent": "chat", "confidence": 0.8}
 
     async def parse_tool_calls(self, prompt: str) -> list[dict[str, Any]]:
-        response = await self._call_with_rotation(prompt, system_prompt=build_system_context(), function_calls=True)
-        calls: list[dict[str, Any]] = []
+        if not self.key_pool.keys:
+            return []
         try:
-            for part in response.candidates[0].content.parts:
-                call = getattr(part, "function_call", None)
-                if call is not None:
-                    calls.append({"name": call.name, "arguments": dict(call.args)})
-        except Exception:
-            pass
-        return calls
+            response = await self._call_with_rotation(prompt, use_tools=True)
+            calls: list[dict[str, Any]] = []
+            for candidate in getattr(response, "candidates", []) or []:
+                for part in getattr(candidate.content, "parts", []) or []:
+                    call = getattr(part, "function_call", None)
+                    if call is not None:
+                        args = getattr(call, "args", None) or {}
+                        calls.append({"name": getattr(call, "name", ""), "arguments": dict(args)})
+            return calls
+        except GeminiKeyRotationError:
+            return []
+
+    def apply_tool_action(self, call: dict[str, Any]) -> dict[str, Any]:
+        name = call.get("name")
+        args = call.get("arguments", {})
+        if name == "save_user_note":
+            save_note(args.get("person", "default"), args.get("info", ""))
+            return {"status": "ok", "action": "save_user_note"}
+        if name == "add_routine":
+            from database import add_routine
+            add_routine(args.get("time", "00:00"), args.get("task", ""))
+            return {"status": "ok", "action": "add_routine"}
+        if name == "remove_routine":
+            from database import remove_routine
+            remove_routine(args.get("time", "00:00"))
+            return {"status": "ok", "action": "remove_routine"}
+        if name == "change_setting":
+            set_setting(args.get("key", ""), args.get("value", ""))
+            return {"status": "ok", "action": "change_setting"}
+        if name in {"move_robot", "set_led", "set_alarm", "set_volume", "turn_on_light", "turn_off_light"}:
+            return {"status": "ok", "action": name, "params": args}
+        if name == "stop_robot":
+            return {"status": "ok", "action": "stop_robot"}
+        return {"status": "queued", "action": name, "params": args}
 
     def record_daily_history(self, date: str, summary: str) -> None:
         upsert_daily_log(date, summary)
 
     def current_state_snapshot(self) -> dict[str, Any]:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
         return {
             "ai_name": get_setting("ai_name", "Kaniye"),
             "language": get_setting("language", "Sinhala/English"),
             "mode": get_setting("mode", "helpful_companion"),
             "routines": list_routines(),
-            "daily_log": get_daily_log(datetime.utcnow().strftime("%Y-%m-%d")),
+            "daily_log": get_daily_log(today),
+            "daily_events": get_daily_events(today),
         }
 
-    def apply_tool_action(self, call: dict[str, Any]) -> dict[str, Any]:
-        name = call.get("name")
-        arguments = call.get("arguments", {})
-        if name == "save_user_note":
-            save_note(arguments.get("person", "default"), arguments.get("info", ""))
-            return {"status": "ok", "action": "save_user_note"}
-        if name == "add_routine":
-            from database import add_routine
-            add_routine(arguments.get("time", "00:00"), arguments.get("task", ""))
-            return {"status": "ok", "action": "add_routine"}
-        if name == "remove_routine":
-            from database import remove_routine
-            remove_routine(arguments.get("time", "00:00"))
-            return {"status": "ok", "action": "remove_routine"}
-        if name == "change_setting":
-            set_setting(arguments.get("key", ""), arguments.get("value", ""))
-            return {"status": "ok", "action": "change_setting"}
-        if name == "move_robot":
-            return {"status": "ok", "action": "move_robot", "params": arguments}
-        if name == "stop_robot":
-            return {"status": "ok", "action": "stop_robot"}
-        if name == "set_led":
-            return {"status": "ok", "action": "set_led", "params": arguments}
-        if name == "set_alarm":
-            return {"status": "ok", "action": "set_alarm", "params": arguments}
-        if name == "set_volume":
-            return {"status": "ok", "action": "set_volume", "params": arguments}
-        if name == "turn_on_light":
-            return {"status": "ok", "action": "turn_on_light", "params": arguments}
-        if name == "turn_off_light":
-            return {"status": "ok", "action": "turn_off_light", "params": arguments}
-        return {"status": "queued", "action": name, "params": arguments}
+
+ai_client = GeminiClient()
