@@ -1,233 +1,198 @@
-# Kaniye Phase 4 hardware
+# Kaniye Companion Robot — Hardware Reference
 
-This is the build reference for the four-node Kaniye system. It describes the
-current firmware pinout; do not silently move a pin on a harness. The robot
-emergency input is **GPIO13**. GPIO0 is not the robot emergency input; its
-other-node uses below are unrelated button/camera signals.
+This document matches the corrected physical chassis and control architecture:
 
-## System at a glance
+- 4-wheel skid-steer, 4 DC gear motors, 1 dual H-bridge (L298N)
+- 4 active suspension corners (4× SG90) on the robot chassis
+- 2 camera servos (2× SG90) on the ESP32-CAM pan/tilt mount
+- 6 SG90 servos total across the full robot
+- All six servos are driven through a PCA9685 16-channel I2C servo driver
+- A dedicated 5 V, 5 A+ buck converter powers the servo rail separately from the logic and motor rails
+
+The robot emergency stop remains on GPIO13. GPIO0 is intentionally avoided due to boot-strapping behavior.
+
+## System overview
 
 ```mermaid
 flowchart LR
-  R[Robot ESP32<br/>motors, LED, I2S speaker<br/>battery/light telemetry]
-  H[Home ESP32<br/>joystick, karaoke mic,<br/>PTT and accessory relay]
-  W[Remote ESP32<br/>joystick, walkie-talkie mic,<br/>PTT and buttons]
-  C[Camera ESP32<br/>camera + pan servo]
-  S[(Wi-Fi / ESP-NOW<br/>server and control links)]
-  H <-->|ESP-NOW| R
-  W <-->|ESP-NOW| R
-  C -->|HTTP/MJPEG| S
-  R <-->|Wi-Fi/WebSocket| S
-  H -->|ESP-NOW audio/control| S
-  W -->|ESP-NOW audio/control| S
-```
+  R[Robot ESP32\nL298N skid-steer + 4-wheel drive\nPCA9685 servo rail\nI2S speaker + IMU + sensors]
+  C[Camera ESP32-CAM\nOV2640 + pan/tilt servo pair]
+  H[Home ESP32\nrelay/light + karaoke control]
+  W[Remote ESP32\njoystick, PTT, walkie-talkie mic]
+  S[PC Server\nGemini + TTS + WebSocket]
+  B[(Battery pack)]
 
-The robot is the safety authority: a released/triggered emergency input and
-the watchdog must stop the motor driver locally, even if the network or server
-is down. Keep motor power and logic power grounds common, but route motor
-current separately from audio and ADC wiring.
+  B -->|Logic + sensors| R
+  B -->|Motor rail| R
+  B -->|Servo rail| R
+  B -->|Servo rail| C
+  R <-->|Wi-Fi / WebSocket| S
+  H <-->|Wi-Fi / HTTP| S
+  W <-->|ESP-NOW| R
+  C -->|Wi-Fi / HTTP| S
+  R -->|I2C bus| PCA[PCA9685 16-ch servo driver]
+  PCA --> SF[Suspension FL/FR/BL/BR\n4x SG90]
+  PCA --> CP[Camera pan/tilt\n2x SG90]
+```
 
 ## Bill of materials
 
-| Area | Parts | Notes |
-|---|---|---|
-| Controllers | 4 × ESP32 development boards (robot, home, remote, camera) | ESP32-WROOM-class boards; expose the listed GPIOs and ADC1 |
-| Robot drive | Dual H-bridge motor driver, 2 × brushed DC gear motors, wheels/chassis | Driver logic must accept 3.3 V; size for motor stall current |
-| Robot audio | I2S DAC/amplifier (MAX98357A or equivalent), 4–8 Ω speaker | Mono PCM16, 16 kHz |
-| Robot sensing | Battery divider, light sensor/LDR module, emergency mushroom switch | Battery divider must be scaled for the selected pack |
-| Lighting | WS2812B/NeoPixel strip and suitable 5 V supply | Data level shifter is recommended for long strips |
-| Home audio | Electret microphone module with preamp/biased analog output; PTT switch | This is the karaoke microphone input |
-| Remote audio | Electret microphone module with preamp/biased analog output; PTT switch | This is the walkie-talkie microphone input |
-| Controls | 2 × 10 kΩ dual-axis joystick, push buttons, mode/PTT switches | Joystick wipers go to ADC1_CH6/CH7 |
-| Camera | ESP32 camera module (OV2640 class), pan servo, external 5 V servo supply | Keep servo current off the camera 3.3 V rail |
-| Power/protection | Fuses, reverse-polarity protection, buck converters, 100 nF + bulk capacitors, terminal blocks | Add a fuse close to every battery source |
-| Build | 22–26 AWG signal wire, thicker motor wire, JST/screw terminals, heat-shrink | Label every connector with node, signal, and ground |
+| Item | Qty | Notes |
+|---|---:|---|
+| ESP32-WROOM development board (robot) | 1 | Main chassis controller |
+| ESP32-CAM module | 1 | Camera node; 2× SG90 pan/tilt |
+| Home ESP32 controller board | 1 | Room control / karaoke node |
+| Remote ESP32 controller board | 1 | PTT + joystick + audio capture |
+| DC gear motor, 4-wheel chassis | 4 | One per wheel, skid-steer |
+| L298N dual H-bridge | 1 | Drives left/right motor pairs in parallel |
+| SG90 servo motor | 6 total | 4 suspension corners + 2 camera pan/tilt |
+| PCA9685 16-channel PWM/servo driver | 1 | Drives all 6 servos, shared I2C |
+| MPU6050 IMU | 1 | Pitch/roll sensing for suspension auto-level |
+| I2S DAC/amplifier (MAX98357A or equivalent) | 1 | Robot speaker output |
+| Speaker | 1 | 4–8 Ω, powered from audio amp |
+| WS2812B LED strip | 1 | Robot lighting |
+| Electret mic with preamp | 2 | Remote walkie-talkie + home karaoke |
+| 10 kΩ dual-axis joystick | 2 | Home + remote controller |
+| Push buttons / PTT switches | 2+ | Per controller |
+| Battery divider network | 1 | For robot battery voltage monitoring |
+| LDR / light sensor | 1 | Ambient light telemetry |
+| 5V buck converter, servo rail | 1 | Dedicated ≥5 A servo rail |
+| 5V buck converter, logic rail | 1 | ESP32 + sensors + audio logic |
+| 470–1000 µF electrolytic | 1–2 | At PCA9685 / servo power input |
+| 100 nF + 10 µF decoupling | multiple | Near regulator outputs and modules |
+| Fuse + reverse-polarity protection | 1 set | Per battery pack |
+| Wiring and connectors | as required | 22–26 AWG signal, thicker motor leads |
 
-## Pin and connector tables
+## Robot node: drive, safety, and servo rail
 
-### Robot node (`firmware/robot_esp32/main/robot_config.h`)
+### Robot pin table
 
-| Signal | ESP32 pin | Direction | Wiring endpoint |
+| Signal | ESP32 pin | Direction | Connection |
 |---|---:|---|---|
-| Emergency stop | GPIO13* | Input, pulled up | Normally-closed switch to GND; open/tripped means stop |
-| Left motor forward/reverse | GPIO25 / GPIO26 | Output | H-bridge IN1 / IN2 |
-| Right motor forward/reverse | GPIO27 / GPIO14 | Output | H-bridge IN3 / IN4 |
-| Left/right PWM | GPIO33 / GPIO32 | Output (LEDC) | H-bridge ENA / ENB (or PWM inputs) |
-| LED strip data | GPIO4 | Output | WS2812 DIN through ~330 Ω series resistor |
-| I2S LRCK/WS | GPIO22 | Output | DAC LRC/WS |
+| Emergency stop | GPIO13 | Input | N/C switch to GND; open trigger disables motors |
+| Left motor pair A/B | GPIO25 / GPIO26 | Output | L298N IN1 / IN2 |
+| Right motor pair A/B | GPIO27 / GPIO14 | Output | L298N IN3 / IN4 |
+| Left PWM / Right PWM | GPIO33 / GPIO32 | Output | L298N ENA / ENB |
+| LED strip data | GPIO4 | Output | WS2812 DIN via ~330 Ω |
+| I2S LRCK / WS | GPIO22 | Output | DAC LRC |
 | I2S BCLK | GPIO23 | Output | DAC BCLK |
 | I2S data out | GPIO21 | Output | DAC DIN |
-| Battery ADC | GPIO34 (ADC1) | Input only | Divider midpoint |
-| Light ADC | GPIO35 (ADC1) | Input only | LDR/divider midpoint |
+| Battery ADC | GPIO34 | Input | Divider midpoint |
+| Light ADC | GPIO35 | Input | LDR divider midpoint |
+| MPU6050 SDA / SCL | GPIO18 / GPIO19 | I2C | shared I2C bus |
+| PCA9685 SDA / SCL | GPIO18 / GPIO19 | I2C | shared I2C bus |
+| PCA9685 servo power | 5V dedicated servo rail | Power | 5V buck, 470–1000 µF bulk cap at PCA9685 |
 
-\* GPIO13 is the emergency-stop input and is intentionally not GPIO0. GPIO34/35
-are input only; never use them to power a sensor.
+### PCA9685 servo channel map
 
-### Home controller node (`firmware/home_esp32`)
+The servo rail is the final hardware arrangement for all six SG90 actuators.
 
-| Signal | ESP32 pin/channel | Direction | Wiring endpoint |
-|---|---|---|---|
-| Joystick X / Y | GPIO34 / GPIO35 (ADC1_CH6/CH7) | Analog input | 10 kΩ joystick wipers |
-| Select button | GPIO0 | Active-low input | Button to GND; boot strap pin |
-| Mode button | GPIO16 | Active-low input | Button to GND |
-| PTT | GPIO4 | Active-low input | Karaoke PTT switch to GND |
-| Karaoke microphone | ADC1_CH6 (GPIO34 in current source) | Analog input | AC-coupled, biased mic preamp output |
-| Accessory relay | `CONFIG_HOME_RELAY_GPIO`, default GPIO2 | Output | Relay-module IN; default off |
+| PCA9685 channel | Servo function | Notes |
+|---:|---|---|
+| CH0 | Suspension front-left corner | corner FL |
+| CH1 | Suspension front-right corner | corner FR |
+| CH2 | Suspension back-left corner | corner BL |
+| CH3 | Suspension back-right corner | corner BR |
+| CH4 | Camera pan servo | ESP32-CAM mount |
+| CH5 | Camera tilt servo | ESP32-CAM mount |
 
-The current implementation samples the karaoke microphone on ADC1_CH6, which
-is also the joystick-X channel. Treat karaoke as a mutually exclusive mode
-(movement is disabled while karaoke is active), or reserve a future ADC pin and
-update firmware before building a simultaneous-control harness. The Kconfig
-`HOME_PTT_ADC_CHANNEL` and `HOME_AUDIO_THRESHOLD` values are tuning knobs; the
-input source currently uses ADC1_CH6 directly.
+I2C address: PCA9685 default 0x40. If the MPU6050 and PCA9685 share the same bus, keep pull-ups on SDA/SCL and ensure the bus is not overloaded by long servo leads. The PCA9685 uses a separate 5 V servo rail; do not power it from the ESP32 3.3 V rail.
 
-### Remote controller node (`firmware/remote_esp32`)
+## Home controller node
 
-| Signal | ESP32 pin/channel | Direction | Wiring endpoint |
-|---|---|---|---|
-| Joystick X / Y | GPIO34 / GPIO35 (ADC1_CH6/CH7) | Analog input | 10 kΩ joystick wipers |
-| Select button | GPIO0 | Active-low input | Button to GND; boot strap pin |
-| Mode button | GPIO16 | Active-low input | Button to GND |
-| PTT | GPIO4 | Active-low input | Walkie-talkie PTT switch to GND |
-| Walkie-talkie microphone | ADC1_CH6 (GPIO34 in current source) | Analog input | AC-coupled, biased mic preamp output |
+| Signal | ESP32 pin | Direction | Connection |
+|---|---:|---|---|
+| Joystick X | GPIO34 | Analog input | Dual-axis joystick X wiper |
+| Joystick Y | GPIO35 | Analog input | Dual-axis joystick Y wiper |
+| Mode button | GPIO16 | Input | Button to GND |
+| Selection button | GPIO17 | Input | Safe spare button input |
+| PTT switch | GPIO4 | Input | Karaoke mic PTT |
+| Karaoke mic input | ADC1_CH6 / GPIO34 | Analog | Mic preamp output |
+| Relay / light control | `CONFIG_HOME_RELAY_GPIO` | Output | Relay module or light driver |
 
-The remote audio sampler and joystick-X both use ADC1_CH6 in the current
-firmware. Do not expect clean simultaneous joystick-X and microphone readings;
-use PTT/mode to arbitrate, or change the firmware and harness together.
-`REMOTE_PTT_ADC_CHANNEL` is configuration metadata for future audio hardware.
+The home node is a Wi-Fi-connected helper device. It can report to the PC server over HTTP/WebSocket and can still run local command logic if the network is temporarily unavailable.
 
-### Camera node (`firmware/esp32_cam`)
+## Remote controller node
 
-| Signal | ESP32 pin/config | Direction | Wiring endpoint |
-|---|---|---|---|
-| Camera XCLK | GPIO0 | Output | OV2640 XCLK |
-| Camera SCCB SDA / SCL | GPIO26 / GPIO27 | Bidirectional | OV2640 SIOD / SIOC |
-| Camera D0 / D1 | GPIO5 / GPIO18 | Input | OV2640 Y2 / Y3 |
-| Camera D2 / D3 | GPIO19 / GPIO21 | Input | OV2640 Y4 / Y5 |
-| Camera D4 / D5 | GPIO36 / GPIO39 | Input | OV2640 Y6 / Y7 |
-| Camera D6 / D7 | GPIO34 / GPIO35 | Input | OV2640 Y8 / Y9 |
-| Camera VSYNC / HREF / PCLK | GPIO25 / GPIO23 / GPIO22 | Input | OV2640 VSYNC / HREF / PCLK |
-| Pan servo | `CONFIG_CAM_SERVO_GPIO`, default GPIO14 | Output | Servo signal |
-| Servo power | External 5 V | Power | Servo red wire; common GND with ESP32 |
+| Signal | ESP32 pin | Direction | Connection |
+|---|---:|---|---|
+| Joystick X | GPIO34 | Analog input | Dual-axis joystick X wiper |
+| Joystick Y | GPIO35 | Analog input | Dual-axis joystick Y wiper |
+| Mode button | GPIO16 | Input | PTT/mode toggle |
+| Talk button | GPIO4 | Input | Push-to-talk switch |
+| Walkie-talkie mic | ADC1_CH6 / GPIO34 | Analog input | Electret/preamp module |
+| ESP-NOW peer | broadcast / paired peer | RF link | Direct robot link during remote mode |
 
-These camera pins are the current `camera_service.c` mapping for the supported
-OV2640 board. They are not interchangeable with the robot's GPIO table.
+The remote controller is the dedicated walkie-talkie and karaoke control node. While the talk button is held, it sends audio packets via ESP-NOW to the robot. When karaoke mode is active, movement commands are disabled and only mic/audio traffic remains active.
 
-## Wiring, passive components, and power
+## Camera node
 
-1. **Ground and rails.** Use a star ground at the battery/regulator entry.
-   Use a dedicated buck for motors/driver and a clean 5 V-to-3.3 V regulator
-   for ESP32/audio. Tie grounds at one low-impedance point. Never power a
-   motor, relay coil, strip, or servo from an ESP32 3.3 V pin.
-2. **Decoupling.** Place 100 nF ceramic at every module VCC/GND pair; add
-   470–1000 µF low-ESR electrolytic at the motor-driver rail, 470 µF at a
-   WS2812 strip entry, and 470 µF near the servo supply. Add 10 µF bulk at
-   each regulator output. Observe capacitor voltage ratings.
-3. **Motors and relay.** Follow the H-bridge datasheet, fit its required
-   flyback protection, and use a fuse sized below the wiring limit. A bare
-   relay coil requires a transistor/MOSFET and flyback diode; a relay module
-   normally includes these. Keep GPIO2's relay default low during boot.
-4. **Emergency stop.** Wire the normally-closed switch in series to ground
-   with a 10 kΩ pull-up (internal pull-up may supplement, not replace, a
-   defined external pull-up). Put the stop in the driver-enable/power path as
-   a second hardware layer; firmware GPIO13 is not the only safety barrier.
-5. **ADC inputs.** Keep analog leads short and away from PWM/motor wires.
-   Use a 1 kΩ series resistor and 100 nF to GND at each ADC input (one RC
-   filter per signal). Joystick ends use 3.3 V and GND. Never exceed the
-   ESP32 ADC input range; choose battery-divider values accordingly (for
-   example 100 kΩ high side / 33 kΩ low side for a 4-cell nominal pack only
-   after checking the pack's maximum voltage).
-6. **Buttons and PTT.** Firmware enables internal pull-ups; wire each
-   active-low switch to GND. Add an optional 100 nF across a long/cabled
-   switch and debounce in firmware. GPIO0 is a boot strap: hold its button
-   released while powering/flashing.
-7. **Audio/I2S.** Keep I2S traces short, ground-referenced, and separate from
-   motor PWM. The DAC should have its own 100 nF + 10 µF local bypass. Connect
-   speaker only to the amplifier output, never to an ESP32 pin.
-8. **Logic protection.** Confirm every peripheral is 3.3 V logic. Use a
-   74AHCT/level-shifter stage for a 5 V LED strip data line when the strip is
-   long or unreliable. Add TVS/ESD protection at external connectors.
+| Signal | ESP32 pin | Direction | Connection |
+|---|---:|---|---|
+| Camera D0..D7 | GPIO5, GPIO18, GPIO19, GPIO21, GPIO36, GPIO39, GPIO34, GPIO35 | Input | OV2640 data lines |
+| Camera VSYNC / HREF / PCLK | GPIO25 / GPIO23 / GPIO22 | Input | OV2640 sync lines |
+| Camera XCLK | GPIO21 | Output | OV2640 XCLK |
+| Camera SCCB SDA / SCL | GPIO26 / GPIO27 | I2C | OV2640 SIOD / SIOC |
+| Pan servo | PCA9685 CH4 | Output | camera pan SG90 |
+| Tilt servo | PCA9685 CH5 | Output | camera tilt SG90 |
 
-## Node wiring diagrams
+The camera node still uses a dedicated 5 V servo rail, but the pan/tilt actuators are not direct ESP32 GPIO outputs; they are routed through the PCA9685 servo driver.
 
-### Robot
+## Power architecture
 
-```mermaid
-flowchart TB
-  BAT[Battery] --> F[Fuse + reverse protection]
-  F --> MB[Motor buck]
-  F --> LB[Logic/audio buck]
-  MB --> H[Dual H-bridge]
-  H --> ML[Left motor]
-  H --> MR[Right motor]
-  E[N/C emergency switch] -->|GPIO13 + GND| X[Robot ESP32]
-  LB --> X
-  X -->|25,26,33| H
-  X -->|27,14,32| H
-  X -->|22 WS, 23 BCLK, 21 DIN| D[I2S DAC/amp]
-  D --> SP[Speaker]
-  X -->|GPIO4 + 330R| LED[WS2812 strip]
-  X -->|GPIO34 divider| B[Battery sense]
-  X -->|GPIO35| L[Light sensor]
+1. Logic rail: ESP32 + IMU + audio logic + low-current sensors.
+2. Motor rail: L298N supply, motor current path, separate from logic.
+3. Servo rail: dedicated 5 V buck, minimum 5 A output, separate from logic and motor power.
+
+### Recommended power layout
+
+```text
+Battery pack
+  ├─ Logic buck -> ESP32 + IMU + audio + sensors + ADC filters
+  ├─ Motor buck -> L298N and wheel motors
+  └─ Servo buck (>=5A) -> PCA9685 -> 6x SG90 servos
 ```
 
-### Home (karaoke)
+The servo rail must include a 470–1000 µF electrolytic capacitor close to the PCA9685 input, plus local decoupling at each servo branch. Do not share a high-current servo rail with ESP32 logic or motor driver power without isolation.
 
-```mermaid
-flowchart LR
-  P[5 V USB/buck] --> H[Home ESP32]
-  J[Dual-axis joystick] -->|wiper X GPIO34<br/>wiper Y GPIO35| H
-  K[Select GPIO0 / mode GPIO16] --> H
-  T[PTT GPIO4] --> H
-  M[Mic preamp] -->|AC coupling + bias<br/>ADC1_CH6/GPIO34| H
-  H -->|GPIO2 default, or CONFIG_HOME_RELAY_GPIO| Q[Relay module]
-  Q --> A[Accessory]
-  H <-->|ESP-NOW| R[Robot]
-```
+## Wiring notes
 
-### Remote (walkie-talkie)
+- Keep the ground star-point clean and low-impedance.
+- Place 100 nF ceramics near each active module input.
+- Add 10 µF bulk at buck outputs and 470–1000 µF bulk at the PCA9685/servo rail.
+- Keep motor leads away from I2S, ADC, and the microphone preamp wiring.
+- Use a 10 kΩ pull-up on the emergency stop input and a normally-closed mechanical stop wired to ground for the fail-safe path.
+- Use RC filtering on ADC inputs (1 kΩ series + 100 nF to GND) and keep analog routes away from PWM current loops.
+- Keep microphone leads short and shielded from motor noise. Use a bias network so the ADC sees a centered signal without clipping.
 
-```mermaid
-flowchart LR
-  P[Battery/USB 5 V] --> W[Remote ESP32]
-  J[Dual-axis joystick] -->|ADC1_CH6 GPIO34<br/>ADC1_CH7 GPIO35| W
-  B[Select GPIO0 / mode GPIO16] --> W
-  T[PTT GPIO4] --> W
-  M[Walkie-talkie mic preamp] -->|AC coupling + bias<br/>ADC1_CH6/GPIO34| W
-  W <-->|ESP-NOW| R[Robot]
-```
+## Chassis and suspension behavior
 
-### Camera
+The robot uses a 4-wheel skid-steer chassis. The L298N drives left and right pairs in parallel, giving tank steering only (forward, reverse, and left/right turns by left-right speed difference). No independent per-wheel lateral control is present.
 
-```mermaid
-flowchart LR
-  P[Clean 5 V buck] --> C[ESP32 camera]
-  P --> S[Pan servo]
-  C -->|CONFIG_CAM_SERVO_GPIO<br/>default GPIO14| S
-  C --> CAM[OV2640 camera]
-  C -->|Wi-Fi HTTP/MJPEG| N[Network/server]
-  S --- G[Common ground]
-  C --- G
-```
+The suspension is an active, servo-driven system. The robot can:
 
-## Walkie-talkie and karaoke audio tuning
+- level all four corners to a common height
+- stand tall or crouch into a compact stance
+- auto-level the chassis using pitch/roll from the MPU6050
+- hold position during emergency stop and safety override events
+- participate in a dance/celebration animation or best-effort fall-recovery pose
 
-Use an electret capsule with a real preamp (or a MAX9814/MAX4466-style module)
-whose output is biased near 1.65 V and never clips the 0–3.3 V ADC range. Put
-1–4.7 µF in series from the preamp output to the ADC and a 100 kΩ/100 kΩ
-divider (or equivalent bias network) on the ESP32 side. Start with preamp gain
-low, speak 10–15 cm from the capsule, and raise gain until loud speech peaks
-around 70–85% of ADC full scale without clipping.
+The auto-level routine should be called periodically from the sensor/safety task, but production tuning must be done with the real chassis mass and spring geometry. Keep the servo motion slow and smooth; the battery current spikes can exceed the 5V rail budget if all 6 servos move simultaneously.
 
-For the **walkie-talkie**, mount the capsule away from the motor/servo and use
-PTT as the hard audio gate. Tune `REMOTE_COMMAND_TIMEOUT_MS` conservatively
-and verify that releasing PTT immediately ends transmission. For the **karaoke
-mic**, use a foam windscreen, keep the capsule 5–15 cm from the singer, and
-adjust `HOME_AUDIO_THRESHOLD` above fan/room noise but below quiet speech.
-Karaoke mode must inhibit movement because its current ADC channel is shared
-with joystick X.
+## Walkie-talkie and karaoke mic hardware
 
-At the bench, record ADC idle, normal speech, and shouting values; choose the
-threshold from the idle-to-speech gap, then test with the motors, LED strip,
-relay, and servo operating simultaneously. If hum or motor hash appears, fix
-grounding/decoupling and cable routing before increasing software thresholds.
+Use a simple analog electret or MAX9814/MAX4466-style preamp module feeding the ADC input on the remote or home controller. For each mic:
+
+- AC-couple the preamp output to the ADC
+- bias around mid-supply so clipping is avoided
+- keep the capsule away from motor/servo noise
+- use a PTT button to gate audio transmission
+
+The remote controller is the walkie-talkie mic node. The home controller is the karaoke mic node. Both use the analog preamp path, not an INMP441 or other digital I2S mic requirement.
+
+## Final fixture notes
+
+- The robot emergency line is GPIO13 — not GPIO0.
+- Direct GPIO-per-servo wiring is intentionally removed from the final design; all six SG90 servos are placed on the PCA9685 output bus.
+- The servo rail is dedicated and separate from the logic and motor rails.
+- The old passive-spring-only suspension concept is replaced by active servo-actuated corner control, with IMU-based auto-leveling as the main practical benefit.

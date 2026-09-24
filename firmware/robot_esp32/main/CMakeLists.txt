@@ -5,12 +5,14 @@ idf_component_register(
         "control/motor_controller.c"
         "network/robot_transport.c"
         "audio/audio_output.c"
+        "suspension/suspension_controller.c"
     INCLUDE_DIRS
         "."
         "safety"
         "control"
         "network"
         "audio"
+        "suspension"
     REQUIRES
         esp_wifi
         esp_event

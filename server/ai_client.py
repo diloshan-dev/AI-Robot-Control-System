@@ -93,6 +93,7 @@ class GeminiClient:
             self._schema("stop_web_manager", "Stop the dashboard manager", {}, []),
             self._schema("play_radio", "Play a radio station", {"station_name":{"type":"STRING"}}, ["station_name"]),
             self._schema("set_volume", "Set speaker volume", {"level":{"type":"INTEGER","minimum":0,"maximum":100}}, ["level"]),
+            self._schema("set_suspension", "Set the suspension pose or auto-level mode", {"mode":{"type":"STRING","enum":["stand_tall","crouch","level","auto_level_on","auto_level_off"]}}, ["mode"]),
             self._schema("turn_on_light", "Turn on a room light", {"room":{"type":"STRING"}}, ["room"]),
             self._schema("turn_off_light", "Turn off a room light", {"room":{"type":"STRING"}}, ["room"]),
             self._schema("set_reminder", "Set a reminder for a person", {"person":{"type":"STRING"},"time":{"type":"STRING"},"message":{"type":"STRING"}}, ["person","time","message"]),
@@ -210,7 +211,7 @@ class GeminiClient:
         if name == "change_setting":
             set_setting(args.get("key", ""), args.get("value", ""))
             return {"status": "ok", "action": "change_setting"}
-        if name in {"move_robot", "set_led", "set_alarm", "set_volume", "turn_on_light", "turn_off_light"}:
+        if name in {"move_robot", "set_led", "set_alarm", "set_volume", "set_suspension", "turn_on_light", "turn_off_light"}:
             return {"status": "ok", "action": name, "params": args}
         if name == "stop_robot":
             return {"status": "ok", "action": "stop_robot"}

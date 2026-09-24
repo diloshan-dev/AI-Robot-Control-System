@@ -6,6 +6,7 @@
 #include "audio/audio_output.h"
 #include "network/robot_transport.h"
 #include "safety/safety_monitor.h"
+#include "suspension/suspension_controller.h"
 
 static const char *TAG = "robot_app";
 
